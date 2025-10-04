@@ -15,7 +15,7 @@ develop-eggs/
 *.zip
 demo_data/*
 dist/
-# *.png
+*.png
 # *.jpg
 debug/
 weights/*
