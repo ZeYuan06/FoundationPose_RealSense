@@ -94,11 +94,10 @@ def save_realsense_data(output_dir, frame_id, color_image, depth_image, camera_m
     rgb_path = os.path.join(rgb_dir, frame_name)
     cv2.imwrite(rgb_path, color_image)
     
-    # Save depth image (convert back to mm for consistency with dataset)
+    # Save depth image
     depth_path = os.path.join(depth_dir, frame_name)
-    depth_mm = (depth_image * 1000).astype(np.uint16)  # Convert to mm
-    cv2.imwrite(depth_path, depth_mm)
-    
+    cv2.imwrite(depth_path, depth_image)
+
     # Save camera intrinsics
     cam_k_path = os.path.join(output_dir, 'cam_K.txt')
     np.savetxt(cam_k_path, camera_matrix)
@@ -169,6 +168,8 @@ def load_mesh_from_file(mesh_file):
         if hasattr(mesh.visual.material, 'baseColorTexture') or not hasattr(mesh.visual.material, 'image'):
             print("Removing problematic visual properties...")
             mesh.visual = trimesh.visual.ColorVisuals(mesh=mesh)
+
+    # mesh.apply_scale(10.0)
     
     return mesh
 
@@ -244,7 +245,7 @@ def run_pose_estimation_on_captured_data(output_dir, mesh_file, est_refine_iter=
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     code_dir = os.path.dirname(os.path.realpath(__file__))
-    parser.add_argument('--mesh_file', type=str, default=f'{code_dir}/demo_data/realsense/mesh/sample.glb')
+    parser.add_argument('--mesh_file', type=str, default=f'{code_dir}/demo_data/realsense/mesh/textured.obj')
     parser.add_argument('--est_refine_iter', type=int, default=5)
     parser.add_argument('--track_refine_iter', type=int, default=2)
     parser.add_argument('--debug', type=int, default=1)
@@ -278,8 +279,11 @@ if __name__ == '__main__':
                     continue
 
                 # Convert depth for visualization
-                depth_for_viz = depth_image.astype(np.float32) * 0.001
-                depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_for_viz, alpha=0.03), cv2.COLORMAP_JET)
+                depth_for_viz = depth_image.astype(np.float32)
+                # Normalize to 0-255 range for better visualization
+                depth_min, depth_max = 0, 4000
+                depth_normalized = np.clip((depth_for_viz - depth_min) / (depth_max - depth_min) * 255, 0, 255)
+                depth_colormap = cv2.applyColorMap(depth_normalized.astype(np.uint8), cv2.COLORMAP_JET)
 
                 # Display the images
                 cv2.imshow("RealSense Color", color_image)
