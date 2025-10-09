@@ -47,6 +47,7 @@ class RobotiqGripper:
     def __init__(self):
         """Constructor."""
         self.socket = None
+        self.connected = False
         self.command_lock = threading.Lock()
         self._min_position = 0
         self._max_position = 255
@@ -58,14 +59,16 @@ class RobotiqGripper:
     def connect(self, hostname: str, port: int, socket_timeout: float = 10.0) -> None:
         """Connects to a gripper at the given address."""
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        assert self.socket is not None
-        self.socket.connect((hostname, port))
         self.socket.settimeout(socket_timeout)
+        self.socket.connect((hostname, port))
+        self.connected = True
+        print(f"Gripper connected to {hostname}:{port}")
 
     def disconnect(self) -> None:
         """Closes the connection with the gripper."""
         if self.socket is not None:
             self.socket.close()
+        self.connected = False
 
     def _set_vars(self, var_dict: OrderedDict[str, Union[int, float]]):
         """Sends the appropriate command via socket to set the value of n variables."""
@@ -101,10 +104,15 @@ class RobotiqGripper:
 
     def get_current_position(self) -> int:
         """Returns the current position as returned by the physical hardware."""
+        if not self.connected:
+            return 0
         return self._get_var(self.POS)
-
+        
     def move(self, position: int, speed: int, force: int) -> Tuple[bool, int]:
         """Sends commands to start moving towards the given position."""
+        if not self.connected:
+            return False, 0
+            
         position = int(position)
         speed = int(speed)
         force = int(force)
@@ -130,9 +138,10 @@ class RobotiqGripper:
 class Command(enum.Enum):
     STOP = 0
     SERVOL = 1
-    SCHEDULE_WAYPOINT = 2
+    SERVOJ = 2
     GRIPPER_MOVE = 3
-    SCHEDULE_JOINT_WAYPOINT = 4
+    SCHEDULE_WAYPOINT = 4
+    SCHEDULE_JOINT_WAYPOINT = 5
 
 
 class SimpleTrajectoryInterpolator:
@@ -270,11 +279,18 @@ class RTDEInterpolationController(mp.Process):
         # Use simple queues instead of shared memory
         self.input_queue = mp.Queue(maxsize=256)
         
-        # State storage
+        # Add state queue for inter-process communication
+        self.state_queue = mp.Queue(maxsize=10)
+        
+        # State storage for child process
         self.current_state = {}
         self.state_history = []
         self.max_history = get_max_k
         self.state_lock = threading.Lock()
+        
+        # State cache for main process
+        self._cached_state = {}
+        self._cache_lock = threading.Lock()
 
         if receive_keys is None:
             self.receive_keys = [
@@ -302,11 +318,8 @@ class RTDEInterpolationController(mp.Process):
 
     def stop(self, wait=True):
         """Stop the controller process."""
-        try:
-            message = {'cmd': Command.STOP.value}
-            self.input_queue.put(message, timeout=1.0)
-        except:
-            pass
+        message = {'cmd': Command.STOP.value}
+        self.input_queue.put(message, timeout=1.0)
         if wait:
             self.stop_wait()
 
@@ -342,6 +355,24 @@ class RTDEInterpolationController(mp.Process):
         message = {
             'cmd': Command.SERVOL.value,
             'target_pose': pose,
+            'duration': duration,
+            'target_time': 0.0,
+            'gripper_pos': 0.0, 
+            'gripper_speed': 100.0,  
+            'gripper_force': 50.0 
+        }
+        self.input_queue.put(message)
+    
+    def servoJ(self, joints, duration=0.1):
+        """Send joint position command"""
+        assert self.is_alive()
+        assert(duration >= (1/self.frequency))
+        joints = np.array(joints)
+        assert joints.shape == (6,)
+
+        message = {
+            'cmd': Command.SERVOJ.value,
+            'target_joints': joints,
             'duration': duration,
             'target_time': 0.0,
             'gripper_pos': 0.0, 
@@ -419,7 +450,7 @@ class RTDEInterpolationController(mp.Process):
     # ========= receive APIs =============
     def get_state(self, k=None, out=None):
         """
-        Get current or historical robot state.
+        Get current or historical robot state with inter-process communication.
         
         Args:
             k: Number of historical states to return (None for current only)
@@ -428,11 +459,19 @@ class RTDEInterpolationController(mp.Process):
         Returns:
             dict: Robot state information
         """
-        with self.state_lock:
+        # Update cached state from child process
+        while not self.state_queue.empty():
+            latest_state = self.state_queue.get_nowait()
+            with self._cache_lock:
+                self._cached_state = latest_state
+        
+        # Return the cached state
+        with self._cache_lock:
             if k is None:
-                return self.current_state.copy()
+                return self._cached_state.copy() if self._cached_state else {}
             else:
-                return self.state_history[-k:] if len(self.state_history) >= k else self.state_history.copy()
+                # For simplicity, return current state in a list
+                return [self._cached_state] if self._cached_state else []
     
     def get_all_state(self):
         """Get all stored robot states."""
@@ -454,33 +493,20 @@ class RTDEInterpolationController(mp.Process):
         # Initialize gripper connection
         gripper = None
         if self.use_gripper:
-            try:
-                gripper = RobotiqGripper()
-                gripper.connect(hostname=robot_ip, port=self.gripper_port)
-            except Exception as e:
-                print(f"Warning: Failed to connect gripper: {e}")
-                self.use_gripper = False
-                gripper = None
+            gripper = RobotiqGripper()
+            gripper.connect(robot_ip, self.gripper_port)
 
         def get_gripper_state():
             """Helper function to get gripper state"""
-            if gripper is not None:
-                try:
-                    time.sleep(0.001)  # Small delay to avoid too frequent queries
-                    pos = gripper.get_current_position()
-                    # Map 0-255 to 0-1
-                    normalized_pos = pos / 255.0 if pos is not None else 0.0
-                    return {
-                        'gripper_position': np.array([normalized_pos]),
-                        'gripper_force': np.array([0.0]),
-                        'gripper_speed': np.array([0.0])
-                    }
-                except Exception as e:
-                    return {
-                        'gripper_position': np.array([0.0]),
-                        'gripper_force': np.array([0.0]),
-                        'gripper_speed': np.array([0.0])
-                    }
+            if gripper is not None and gripper.connected:
+                pos = gripper.get_current_position()
+                # Map 0-255 to 0-1
+                normalized_pos = pos / 255.0 if pos is not None else 0.0
+                return {
+                    'gripper_position': np.array([normalized_pos]),
+                    'gripper_force': np.array([0.0]),
+                    'gripper_speed': np.array([0.0])
+                }
             else:
                 return {
                     'gripper_position': np.array([0.0]),
@@ -488,147 +514,153 @@ class RTDEInterpolationController(mp.Process):
                     'gripper_speed': np.array([0.0])
                 }
 
-        try:
-            # set parameters
-            if self.tcp_offset_pose is not None:
-                rtde_c.setTcp(self.tcp_offset_pose)
-            if self.payload_mass is not None:
-                if self.payload_cog is not None:
-                    assert rtde_c.setPayload(self.payload_mass, self.payload_cog)
-                else:
-                    assert rtde_c.setPayload(self.payload_mass)
+        # set parameters
+        if self.tcp_offset_pose is not None:
+            rtde_c.setTcp(self.tcp_offset_pose)
+        if self.payload_mass is not None:
+            if self.payload_cog is not None:
+                assert rtde_c.setPayload(self.payload_mass, self.payload_cog)
+            else:
+                assert rtde_c.setPayload(self.payload_mass)
+        
+        # init pose
+        if self.joints_init is not None:
+            assert rtde_c.moveJ(self.joints_init, self.joints_init_speed, 1.4)
+
+        # main loop
+        dt = 1. / self.frequency
+        curr_pose = rtde_r.getActualTCPPose()
+        curr_joints = rtde_r.getActualQ()  # Get current joint positions
+        # use monotonic time to make sure the control loop never go backward
+        curr_t = time.monotonic()
+        last_waypoint_time = curr_t
+        pose_interp = SimpleTrajectoryInterpolator(
+            times=np.array([curr_t]),
+            poses=np.array([curr_pose])
+        )
+        # Create joint interpolator for joint control
+        joint_interp = SimpleTrajectoryInterpolator(
+            times=np.array([curr_t]),
+            poses=np.array([curr_joints])
+        )
+        
+        iter_idx = 0
+        keep_running = True
+        
+        while keep_running:
+            # start control iteration
+            t_start = rtde_c.initPeriod()
+
+            # send command to robot
+            t_now = time.monotonic()
+
+            # Use joint control mode
+            joint_command = joint_interp(np.array([t_now]))[0]  # Pass as array and get first result
+            # Convert numpy array to list of floats
+            joint_command_list = joint_command.tolist() if hasattr(joint_command, 'tolist') else list(joint_command)
             
-            # init pose
-            if self.joints_init is not None:
-                assert rtde_c.moveJ(self.joints_init, self.joints_init_speed, 1.4)
-
-            # main loop
-            dt = 1. / self.frequency
-            curr_pose = rtde_r.getActualTCPPose()
-            curr_joints = rtde_r.getActualQ()  # Get current joint positions
-            # use monotonic time to make sure the control loop never go backward
-            curr_t = time.monotonic()
-            last_waypoint_time = curr_t
-            pose_interp = SimpleTrajectoryInterpolator(
-                times=np.array([curr_t]),
-                poses=np.array([curr_pose])
-            )
-            # Create joint interpolator for joint control
-            joint_interp = SimpleTrajectoryInterpolator(
-                times=np.array([curr_t]),
-                poses=np.array([curr_joints])
-            )
+            # Use optimized parameters for better performance
+            vel = 2.0   # Joint velocity (rad/s) - increased for faster execution
+            acc = 2.0   # Joint acceleration (rad/s^2) - increased for faster execution
             
-            iter_idx = 0
-            keep_running = True
+            # Use servoJ for joint control with proper parameters
+            assert rtde_c.servoJ(joint_command_list, acc, vel, dt, self.lookahead_time, self.gain)
             
-            while keep_running:
-                # start control iteration
-                t_start = rtde_c.initPeriod()
+            # update robot state
+            state = dict()
+            for key in self.receive_keys:
+                state[key] = np.array(getattr(rtde_r, 'get'+key)())
+            state['robot_receive_timestamp'] = time.time()
+            
+            # Add gripper state
+            if self.use_gripper:
+                gripper_state = get_gripper_state()
+                state.update(gripper_state)
+            
+            # Store state in child process
+            with self.state_lock:
+                self.current_state = state.copy()
+                self.state_history.append(state)
+                if len(self.state_history) > self.max_history:
+                    self.state_history.pop(0)
+            
+            # Send state to main process via queue
+            if not self.state_queue.full():
+                self.state_queue.put_nowait(state.copy())
 
-                # send command to robot
-                t_now = time.monotonic()
+            # Process commands
+            while not self.input_queue.empty():
+                command = self.input_queue.get_nowait()
+                cmd = command['cmd']
 
-                # Use joint control mode
-                joint_command = joint_interp(np.array([t_now]))[0]  # Pass as array and get first result
-                # Convert numpy array to list of floats
-                joint_command_list = joint_command.tolist() if hasattr(joint_command, 'tolist') else list(joint_command)
-                
-                # Use optimized parameters for better performance
-                vel = 2.0   # Joint velocity (rad/s) - increased for faster execution
-                acc = 2.0   # Joint acceleration (rad/s^2) - increased for faster execution
-                
-                # Use servoJ for joint control with proper parameters
-                assert rtde_c.servoJ(joint_command_list, acc, vel, dt, self.lookahead_time, self.gain)
-                
-                # update robot state
-                state = dict()
-                for key in self.receive_keys:
-                    state[key] = np.array(getattr(rtde_r, 'get'+key)())
-                state['robot_receive_timestamp'] = time.time()
-                
-                # Add gripper state
-                if self.use_gripper:
-                    gripper_state = get_gripper_state()
-                    state.update(gripper_state)
-                
-                # Store state
-                with self.state_lock:
-                    self.current_state = state.copy()
-                    self.state_history.append(state)
-                    if len(self.state_history) > self.max_history:
-                        self.state_history.pop(0)
+                if cmd == Command.STOP.value:
+                    keep_running = False
+                    break
+                elif cmd == Command.SERVOL.value:
+                    target_pose = command['target_pose']
+                    duration = float(command['duration'])
+                    curr_time = t_now + dt
+                    t_insert = curr_time + duration
+                    pose_interp.drive_to_waypoint(
+                        pose=target_pose,
+                        time=t_insert,
+                        curr_time=curr_time
+                    )
+                    last_waypoint_time = t_insert
+                elif cmd == Command.SERVOJ.value:
+                    target_joints = command['target_joints']
+                    duration = float(command['duration'])
+                    curr_time = t_now + dt
+                    t_insert = curr_time + duration
+                    joint_interp.drive_to_waypoint(
+                        pose=target_joints,
+                        time=t_insert,
+                        curr_time=curr_time
+                    )
+                    last_waypoint_time = t_insert
+                elif cmd == Command.SCHEDULE_WAYPOINT.value:
+                    target_pose = command['target_pose']
+                    target_time = float(command['target_time'])
+                    target_time = time.monotonic() - time.time() + target_time
+                    pose_interp.schedule_waypoint(
+                        pose=target_pose,
+                        time=target_time,
+                        curr_time=t_now + dt,
+                        last_waypoint_time=last_waypoint_time
+                    )
+                    last_waypoint_time = target_time
+                elif cmd == Command.SCHEDULE_JOINT_WAYPOINT.value:
+                    target_joints = command['target_joints']
+                    target_time = float(command['target_time'])
+                    target_time = time.monotonic() - time.time() + target_time
+                    
+                    joint_interp.schedule_waypoint(
+                        pose=target_joints,
+                        time=target_time,
+                        curr_time=t_now + dt,
+                        last_waypoint_time=last_waypoint_time
+                    )
+                    last_waypoint_time = target_time
+                elif cmd == Command.GRIPPER_MOVE.value:
+                    if gripper is not None and gripper.connected:
+                        gripper_pos = int(float(command['gripper_pos']) * 255)
+                        gripper_speed = int(command.get('gripper_speed', 255))
+                        gripper_force = int(command.get('gripper_force', 100))
+                        gripper.move(gripper_pos, gripper_speed, gripper_force)
 
-                # Process commands
-                try:
-                    while not self.input_queue.empty():
-                        command = self.input_queue.get_nowait()
-                        cmd = command['cmd']
+            # regulate frequency
+            rtde_c.waitPeriod(t_start)
 
-                        if cmd == Command.STOP.value:
-                            keep_running = False
-                            break
-                        elif cmd == Command.SERVOL.value:
-                            target_pose = command['target_pose']
-                            duration = float(command['duration'])
-                            curr_time = t_now + dt
-                            t_insert = curr_time + duration
-                            pose_interp.drive_to_waypoint(
-                                pose=target_pose,
-                                time=t_insert,
-                                curr_time=curr_time
-                            )
-                            last_waypoint_time = t_insert
-                        elif cmd == Command.SCHEDULE_WAYPOINT.value:
-                            target_pose = command['target_pose']
-                            target_time = float(command['target_time'])
-                            target_time = time.monotonic() - time.time() + target_time
-                            pose_interp.schedule_waypoint(
-                                pose=target_pose,
-                                time=target_time,
-                                curr_time=t_now + dt,
-                                last_waypoint_time=last_waypoint_time
-                            )
-                            last_waypoint_time = target_time
-                        elif cmd == Command.SCHEDULE_JOINT_WAYPOINT.value:
-                            target_joints = command['target_joints']
-                            target_time = float(command['target_time'])
-                            target_time = time.monotonic() - time.time() + target_time
-                            
-                            joint_interp.schedule_waypoint(
-                                pose=target_joints,
-                                time=target_time,
-                                curr_time=t_now + dt,
-                                last_waypoint_time=last_waypoint_time
-                            )
-                            last_waypoint_time = target_time
-                        elif cmd == Command.GRIPPER_MOVE.value:
-                            if gripper is not None:
-                                try:
-                                    gripper_pos = int(float(command['gripper_pos']) * 255)
-                                    gripper_speed = int(command.get('gripper_speed', 255))
-                                    gripper_force = int(command.get('gripper_force', 100))
-                                    gripper.move(gripper_pos, gripper_speed, gripper_force)
-                                except Exception as e:
-                                    pass
-                except queue.Empty:
-                    pass
+            # first loop successful, ready to receive command
+            if iter_idx == 0:
+                self.ready_event.set()
+            iter_idx += 1
 
-                # regulate frequency
-                rtde_c.waitPeriod(t_start)
-
-                # first loop successful, ready to receive command
-                if iter_idx == 0:
-                    self.ready_event.set()
-                iter_idx += 1
-
-        finally:
-            # manditory cleanup
-            # decelerate
-            rtde_c.servoStop()
-
-            # terminate
-            rtde_c.stopScript()
-            rtde_c.disconnect()
-            rtde_r.disconnect()
-            self.ready_event.set()
+        # manditory cleanup
+        rtde_c.servoStop()
+        rtde_c.stopScript()
+        rtde_c.disconnect()
+        rtde_r.disconnect()
+        if gripper and gripper.connected:
+            gripper.disconnect()
+        self.ready_event.set()

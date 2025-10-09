@@ -18,7 +18,7 @@ class RoboticArm:
                 tcp_offset=0.13,
                 init_joints=True,
                 use_gripper=True,
-                gripper_port=63352,
+                gripper_port=52345,
                 shm_manager: SharedMemoryManager=None,
         ):
         """
@@ -127,7 +127,8 @@ class RoboticArm:
         pose = action[:6]
         gripper_pos = action[6]
 
-        self.controller.schedule_waypoint(pose, target_time)
+        # Use servoJ for immediate Cartesian control
+        self.controller.servoJ(pose, duration=0.1)
         self.controller.command_gripper(gripper_pos)
 
     def exec_joint_action(self, joint_action: np.ndarray, target_time: float):
@@ -141,7 +142,8 @@ class RoboticArm:
         assert self.is_ready
         assert joint_action.shape == (6,)
 
-        self.controller.schedule_joint_waypoint(joint_action, target_time)
+        # Use servoJ for immediate joint control
+        self.controller.servoJ(joint_action, duration=0.1)
 
     def command_gripper(self, gripper_pos: float, speed=255, force=100):
         """
@@ -174,20 +176,13 @@ def main():
         tcp_offset=0.13,
         init_joints=True,
         use_gripper=True,
-        gripper_port=6001
+        gripper_port=63352
     ) as robot:
-        
-        print(f"Robot connected successfully to {robot_ip}")
-        print("Waiting for robot to be ready...")
-        
-        # Wait a moment for the robot to initialize
-        time.sleep(2.0)
-
-        print("Robot is ready!")
-        
         # Get initial robot state
         initial_state = robot.get_state()
         print("Initial robot state received")
+        print(f"Current TCP pose: {initial_state.get('ActualTCPPose', 'Not available')}")
+        print(f"Current joint positions: {initial_state.get('ActualQ', 'Not available')}")
         
         # Test 1: Send a simple gripper command
         print("Test 1: Testing gripper control...")
@@ -202,10 +197,12 @@ def main():
         # Test 2: Send a test Cartesian pose action
         print("Test 2: Testing Cartesian pose control...")
         
-        # Create a simple test action (small movement)
-        # This is a 7-element array: [x, y, z, rx, ry, rz, gripper_pos]
-        test_action = np.array([0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.0])  # Small 1cm z movement
-        target_time = time.time() + 3.0  # Execute in 3 seconds
+        # Get current TCP pose and make small movement
+        test_pose = np.array([0, -80, 100, -100, -100, 0]) / 180 * np.pi
+        
+        # Create action with pose + gripper
+        test_action = np.concatenate([test_pose, [0.0]])  # 6D pose + gripper
+        target_time = time.time() + 3.0
         
         robot.exec_action(test_action, target_time)
         print("Cartesian pose command sent")
@@ -214,8 +211,10 @@ def main():
         # Test 3: Send a test joint action
         print("Test 3: Testing joint space control...")
         
-        # Small joint movement (in radians)
-        joint_action = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.1])  # Small wrist rotation
+        # Get current joint positions and make small movement
+        current_joints = initial_state["ActualQ"]
+        joint_action = current_joints.copy()
+        joint_action[5] += 0.1  # Small wrist rotation
         target_time = time.time() + 3.0
         
         robot.exec_joint_action(joint_action, target_time)
