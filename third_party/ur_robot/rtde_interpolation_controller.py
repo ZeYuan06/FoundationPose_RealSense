@@ -159,21 +159,21 @@ class SimpleTrajectoryInterpolator:
             self.start_time = time.monotonic()
             self.target_time = time.monotonic()
         
-    def schedule_waypoint(self, pose, time, **kwargs):
+    def schedule_waypoint(self, pose, target_time, **kwargs):
         """Schedule a waypoint to reach at target_time."""
         curr_time = kwargs.get('curr_time', time.monotonic())
         self.current_pose = self(np.array([curr_time]))[0]
         self.target_pose = np.array(pose)
         self.start_time = curr_time
-        self.target_time = time
+        self.target_time = target_time
         return self
         
-    def drive_to_waypoint(self, pose, time, curr_time, **kwargs):
+    def drive_to_waypoint(self, pose, target_time, curr_time, **kwargs):
         """Drive to waypoint with specified timing."""
         self.current_pose = self(np.array([curr_time]))[0]
         self.target_pose = np.array(pose)
         self.start_time = curr_time
-        self.target_time = time
+        self.target_time = target_time
         return self
         
     def __call__(self, times):
@@ -386,6 +386,7 @@ class RTDEInterpolationController(mp.Process):
         Pose: 6D end-effector pose
         target_time: absolute time in seconds
         """
+        raise NotImplementedError("The robotic arm does not support Cartesian control currently.")
         assert self.is_alive()
         pose = np.array(pose)
         assert pose.shape == (6,)
@@ -603,7 +604,7 @@ class RTDEInterpolationController(mp.Process):
                     t_insert = curr_time + duration
                     pose_interp.drive_to_waypoint(
                         pose=target_pose,
-                        time=t_insert,
+                        target_time=t_insert,
                         curr_time=curr_time
                     )
                     last_waypoint_time = t_insert
@@ -614,7 +615,7 @@ class RTDEInterpolationController(mp.Process):
                     t_insert = curr_time + duration
                     joint_interp.drive_to_waypoint(
                         pose=target_joints,
-                        time=t_insert,
+                        target_time=t_insert,
                         curr_time=curr_time
                     )
                     last_waypoint_time = t_insert
@@ -624,7 +625,7 @@ class RTDEInterpolationController(mp.Process):
                     target_time = time.monotonic() - time.time() + target_time
                     pose_interp.schedule_waypoint(
                         pose=target_pose,
-                        time=target_time,
+                        target_time=target_time,
                         curr_time=t_now + dt,
                         last_waypoint_time=last_waypoint_time
                     )
@@ -636,7 +637,7 @@ class RTDEInterpolationController(mp.Process):
                     
                     joint_interp.schedule_waypoint(
                         pose=target_joints,
-                        time=target_time,
+                        target_time=target_time,
                         curr_time=t_now + dt,
                         last_waypoint_time=last_waypoint_time
                     )

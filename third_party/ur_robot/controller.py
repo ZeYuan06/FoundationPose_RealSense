@@ -1,7 +1,7 @@
 import time
 import numpy as np
 from multiprocessing.managers import SharedMemoryManager
-from third_party.ur_robot.rtde_interpolation_controller import RTDEInterpolationController
+from .rtde_interpolation_controller import RTDEInterpolationController
 
 class RoboticArm:
     """
@@ -128,7 +128,7 @@ class RoboticArm:
         gripper_pos = action[6]
 
         # Use servoJ for immediate Cartesian control
-        self.controller.servoJ(pose, duration=0.1)
+        self.controller.schedule_joint_waypoint(pose, target_time)
         self.controller.command_gripper(gripper_pos)
 
     def exec_joint_action(self, joint_action: np.ndarray, target_time: float):
@@ -143,7 +143,7 @@ class RoboticArm:
         assert joint_action.shape == (6,)
 
         # Use servoJ for immediate joint control
-        self.controller.servoJ(joint_action, duration=0.1)
+        self.controller.schedule_joint_waypoint(joint_action, target_time)
 
     def command_gripper(self, gripper_pos: float, speed=255, force=100):
         """
@@ -202,7 +202,7 @@ def main():
         
         # Create action with pose + gripper
         test_action = np.concatenate([test_pose, [0.0]])  # 6D pose + gripper
-        target_time = time.time() + 3.0
+        target_time = time.time() + 1.0
         
         robot.exec_action(test_action, target_time)
         print("Cartesian pose command sent")
@@ -211,15 +211,15 @@ def main():
         # Test 3: Send a test joint action
         print("Test 3: Testing joint space control...")
         
-        # Get current joint positions and make small movement
-        current_joints = initial_state["ActualQ"]
-        joint_action = current_joints.copy()
-        joint_action[5] += 0.1  # Small wrist rotation
-        target_time = time.time() + 3.0
+        # # Get current joint positions and make small movement
+        # current_joints = initial_state["ActualQ"]
+        # joint_action = current_joints.copy()
+        # joint_action[5] += 0.1  # Small wrist rotation
+        # target_time = time.time() + 3.0
         
-        robot.exec_joint_action(joint_action, target_time)
-        print("Joint space command sent")
-        time.sleep(4.0)  # Wait for execution
+        # robot.exec_joint_action(joint_action, target_time)
+        # print("Joint space command sent")
+        # time.sleep(4.0)  # Wait for execution
         
         # Get final robot state
         final_state = robot.get_state()
