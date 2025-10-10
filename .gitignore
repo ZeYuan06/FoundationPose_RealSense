@@ -156,3 +156,5 @@ data/
 logs/
 !BundleTrack/XMem/inference/data
 run_used.yml
+
+third_party/ur_robot/grasps
