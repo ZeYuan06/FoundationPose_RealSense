@@ -478,7 +478,7 @@ class RealRobotMotionPlanner:
         if self.debug:
             print(f"Planning screw motion to pose: {target_pose}")
             
-        result = self.planner.plan_screw(
+        result = self.planner.plan_screw(   # FIXME: Please check which coordinate system is used here
             goal_pose,
             start_joints,
             time_step=0.008,
