@@ -37,7 +37,7 @@ def solve_pickbox_with_grasp_real_robot(
         bool: True if task completed successfully, False otherwise
     """
     if grasp_file_path is None:
-        grasp_file_path = os.path.join(os.path.dirname(__file__), "grasps", "bleach_cleanser_grasps.npz")
+        grasp_file_path = os.path.join(os.path.dirname(__file__), "grasps", "flask_grasps.npz")
     
     print(f"Starting pick task with grasp {grasp_idx}")
     print(f"Object pose: {object_pose}")
@@ -63,7 +63,7 @@ def solve_pickbox_with_grasp_real_robot(
         print("Robot ready!")
         
         # Initialize motion planner
-        object_pose_camera = np.array([0.756983, 0.933574, 0.183183, -0.143351, 2.6205, -1.66623])
+        object_pose_camera = np.array([-1.0599, -0.565981, 0.68005, -2.21643, 0.47606, -0.335874])
         planner = MotionPlanner(
             robot=robot,
             camera_to_robot_transform=object_pose_camera,
@@ -98,10 +98,10 @@ def solve_pickbox_with_grasp_real_robot(
         print("Stage 2: Moving to pre-grasp position")
         # Create approach pose (move back along Z-axis)
         approach_pose = grasp_pose.copy()
-        approach_pose[2] -= approach_distance  # Move back in Z direction
+        approach_pose[2] += approach_distance  # Move back in Z direction
         
         print(f"Approach pose: {approach_pose}")
-        success = planner.move_to_pose(approach_pose, use_rrt=True, execution_time=4.0)
+        success = planner.move_to_pose(approach_pose, use_rrt=False, execution_time=4.0)
         if not success:
             print("Pre-grasp position planning failed")
             planner.close()
@@ -145,7 +145,7 @@ def solve_pickbox_with_grasp_real_robot(
         # -------------------------------------------------------------------------- #
         if return_to_home:
             print("Stage 6: Moving to home position")
-            success = planner.move_to_pose(initial_tcp_pose, use_rrt=True, execution_time=5.0)
+            success = planner.move_to_pose(initial_tcp_pose, use_rrt=False, execution_time=5.0)
             if not success:
                 print("Home position planning failed")
                 planner.close()

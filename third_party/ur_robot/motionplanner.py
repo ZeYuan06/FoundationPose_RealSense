@@ -11,6 +11,18 @@ from .controller import RoboticArm
 OPEN = 0.0
 CLOSED = 0.8
 
+def debug_pose_to_xyz_rxryrz(mplib_pose):
+    # get translation
+    p = mplib_pose.get_p()  # or mplib_pose.p
+    # get quaternion
+    q = mplib_pose.get_q()  # returns [w, x, y, z]
+    # convert to [x, y, z, w] order for scipy
+    w, x, y, z = q
+    quat_scipy = np.array([x, y, z, w])
+    # make Rotation object
+    r = Rotation.from_quat(quat_scipy)
+    rotvec = r.as_rotvec()  # gives (rx, ry, rz) in radians
+    return np.concatenate([p.reshape(3,) * 1000, rotvec])
 
 class RealRobotMotionPlanner:
     """
@@ -60,12 +72,19 @@ class RealRobotMotionPlanner:
         self.current_grasp_idx = 0
         self.use_point_cloud = False
 
-        if camera_to_robot_transform is not None:
-            self.camera_to_robot_transform = np.array(camera_to_robot_transform)
-            assert self.camera_to_robot_transform.shape == (4, 4), "Transform must be 4x4 matrix"
-            print("Camera-robot calibration loaded")
-        else:
+        if camera_to_robot_transform is None:
             raise ValueError("The robot camera calibration matrix must be provided")
+        
+        if camera_to_robot_transform.shape == (6,):
+            # Convert 6D pose to 4x4 transformation matrix
+            self.camera_to_robot_transform = self.pose_to_matrix(camera_to_robot_transform)
+            print(f"Camera-robot calibration loaded from 6D pose: {camera_to_robot_transform}")
+        elif camera_to_robot_transform.shape == (4, 4):
+            # Already a 4x4 matrix
+            self.camera_to_robot_transform = camera_to_robot_transform
+            print("Camera-robot calibration loaded from 4x4 matrix")
+        else:
+            raise ValueError(f"Transform must be 6D pose [x,y,z,rx,ry,rz] or 4x4 matrix, got shape: {camera_to_robot_transform.shape}")
         
         print("Real robot motion planner initialized successfully")
 
@@ -95,18 +114,25 @@ class RealRobotMotionPlanner:
         
         return grasp_data
     
-    def transform_pose_camera_to_robot(self, camera_pose: np.ndarray) -> np.ndarray:
+    def transform_pose_camera_to_robot(self, camera_pose: Union[np.ndarray, List]) -> np.ndarray:
         """
         Transform object pose from camera frame to robot base frame
         
         Args:
-            camera_pose: 6D or 7D pose in camera frame [x, y, z, rx, ry, rz] or [x, y, z, qx, qy, qz, qw]
+            camera_pose: 6D pose [x, y, z, rx, ry, rz], 7D pose [x, y, z, qx, qy, qz, qw], 
+                        or 4x4 transformation matrix
             
         Returns:
             6D pose in robot frame [x, y, z, rx, ry, rz]
         """
-        # Convert camera pose to 4x4 matrix
-        camera_matrix = self.pose_to_matrix(camera_pose)
+        camera_pose = np.array(camera_pose)
+        
+        # Check if input is already a 4x4 transformation matrix
+        if camera_pose.shape == (4, 4):
+            camera_matrix = camera_pose
+        else:
+            # Convert 6D or 7D pose to 4x4 matrix
+            camera_matrix = self.pose_to_matrix(camera_pose)
         
         # Transform to robot frame: Robot_Pose = Camera_to_Robot * Camera_Pose
         robot_matrix = self.camera_to_robot_transform @ camera_matrix
@@ -115,7 +141,10 @@ class RealRobotMotionPlanner:
         robot_pose = self.matrix_to_pose(robot_matrix, format='rotvec')
         
         if self.debug:
-            print(f"Camera pose: {camera_pose}")
+            if camera_pose.shape == (4, 4):
+                print(f"Camera pose (matrix):\n{camera_pose}")
+            else:
+                print(f"Camera pose: {camera_pose}")
             print(f"Robot pose: {robot_pose}")
         
         return robot_pose
@@ -152,10 +181,42 @@ class RealRobotMotionPlanner:
         # Create SRDF path if not provided
         self.srdf_path = self.urdf_path.replace(".urdf", ".srdf")
 
+        # Define the 6 arm joints we want to control (from URDF analysis)
+        joint_names = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint', 'left_outer_knuckle_joint', 'left_inner_knuckle_joint', 'right_outer_knuckle_joint', 'right_inner_knuckle_joint', 'left_inner_finger_joint', 'right_inner_finger_joint']
+        
+        # Define relevant link names (you can include all or just the important ones)
+        link_names = [
+            'base_link',
+            'base_link_inertia',
+            'base',
+            'shoulder_link',
+            'upper_arm_link',
+            'forearm_link',
+            'wrist_1_link',
+            'wrist_2_link',
+            'wrist_3_link',
+            'flange',
+            'tool0',
+            'robotiq_arg2f_base_link',
+            'eef',
+            'left_outer_knuckle',
+            'left_inner_knuckle',
+            'right_outer_knuckle',
+            'right_inner_knuckle',
+            'left_outer_finger',
+            'right_outer_finger',
+            'left_inner_finger',
+            'right_inner_finger',
+            'left_inner_finger_pad',
+            'right_inner_finger_pad'
+        ]
+
         planner = mplib.Planner(
             urdf=self.urdf_path,
             srdf=self.srdf_path if os.path.exists(self.srdf_path) else None,
-            move_group="tool0",  # UR robot end-effector
+            user_joint_names=joint_names,
+            user_link_names=link_names,
+            move_group="eef",  # UR robot end-effector
             joint_vel_limits=np.ones(6) * self.joint_vel_limits,
             joint_acc_limits=np.ones(6) * self.joint_acc_limits,
         )
@@ -344,23 +405,28 @@ class RealRobotMotionPlanner:
         if start_joints is None:
             start_joints = self.get_current_joint_positions()
         
-        # Convert pose to [position, quaternion] format for mplib
+        # Convert pose to mplib.Pose format
+        from mplib.pymp import Pose
         pos = target_pose[:3]
         rot_vec = target_pose[3:]
         rot = Rotation.from_rotvec(rot_vec)
         quat = rot.as_quat()  # [x, y, z, w]
-        target_pose_mplib = np.concatenate([pos, quat])
+        
+        # Create mplib.Pose object
+        goal_pose = Pose(pos, quat)
         
         if self.debug:
             print(f"Planning RRT to pose: {target_pose}")
             print(f"From joints: {start_joints}")
         
-        result = self.planner.plan_qpos_to_pose(
-            target_pose_mplib,
-            start_joints,
+        result = self.planner.plan_pose(
+            goal_pose=goal_pose,
+            current_qpos=start_joints,
             time_step=0.008,  # 125Hz control frequency
-            use_point_cloud=self.use_point_cloud,
             wrt_world=True,
+            planning_time=5.0,  # Give more time for planning
+            rrt_range=0.1,
+            verbose=self.debug
         )
         
         if self.debug:
@@ -379,10 +445,13 @@ class RealRobotMotionPlanner:
             print(f"Planning RRT to joints: {target_joints}")
             print(f"From joints: {start_joints}")
             
-        result = self.planner.plan_qpos_to_qpos(
-            target_joints,
-            start_joints,
+        result = self.planner.plan_qpos(
+            goal_qposes=[target_joints],  # Note: this expects a list
+            current_qpos=start_joints,
             time_step=0.008,
+            planning_time=5.0,
+            rrt_range=0.1,
+            verbose=self.debug
         )
         
         if self.debug:
@@ -397,21 +466,25 @@ class RealRobotMotionPlanner:
         if start_joints is None:
             start_joints = self.get_current_joint_positions()
         
-        # Convert pose format
+        # Convert pose to mplib.Pose format
+        from mplib.pymp import Pose
         pos = target_pose[:3]
         rot_vec = target_pose[3:]
         rot = Rotation.from_rotvec(rot_vec)
         quat = rot.as_quat()
-        target_pose_mplib = np.concatenate([pos, quat])
+        
+        goal_pose = Pose(pos, quat)
         
         if self.debug:
             print(f"Planning screw motion to pose: {target_pose}")
             
         result = self.planner.plan_screw(
-            target_pose_mplib,
+            goal_pose,
             start_joints,
             time_step=0.008,
-        )
+            # wrt_world=True,
+            # verbose=self.debug
+        ) # goal_pose = [-951.8541469909146, -53.174801314369425, 270.3962424086691, 0.8467532487376251, -1.438695340652482, 1.4228045503522344]
         
         if self.debug:
             print(f"Screw motion planning result: {result['status']}")
