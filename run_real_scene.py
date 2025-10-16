@@ -223,14 +223,14 @@ def run_pose_estimation_on_captured_data(output_dir, mesh_file, est_refine_iter=
             # Subsequent frames: tracking
             pose = est.track_one(rgb=color, depth=depth, K=reader.K, iteration=track_refine_iter)
         
-        poses.append(pose)
-        
+        center_pose = pose @ np.linalg.inv(to_origin)
+        poses.append(center_pose)
+
         # Save pose
         os.makedirs(f'{debug_dir}/ob_in_cam', exist_ok=True)
-        np.savetxt(f'{debug_dir}/ob_in_cam/{reader.id_strs[i]}.txt', pose.reshape(4,4))
+        np.savetxt(f'{debug_dir}/ob_in_cam/{reader.id_strs[i]}.txt', center_pose.reshape(4,4))
         
         if debug >= 1:
-            center_pose = pose @ np.linalg.inv(to_origin)
             vis = draw_posed_3d_box(reader.K, img=color, ob_in_cam=center_pose, bbox=bbox)
             vis = draw_xyz_axis(color, ob_in_cam=center_pose, scale=0.1, K=reader.K, thickness=3, transparency=0, is_input_rgb=True)
             cv2.imshow('Pose Estimation Result', vis[...,::-1])
