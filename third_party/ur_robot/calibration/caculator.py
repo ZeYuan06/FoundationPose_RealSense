@@ -22,6 +22,7 @@ import numpy as np
 import cv2
 from scipy.spatial.transform import Rotation as R
 from scipy.optimize import least_squares
+from typing import List
 
 
 # ============================================================================
@@ -310,29 +311,64 @@ def optimize_hand_eye_calibration(tool_poses_in_base, tag_poses_in_camera,
 # Main Calibration Script
 # ============================================================================
 
-def main():
+def caculate(tool_poses: List[np.array], tag_poses: List[np.array]):
     """
     Main function to perform hand-eye calibration.
     Fill in your measurement data in the section below.
     """
-    
-    # ========================================================================
-    # TODO: Fill in your collected calibration data here
-    # ========================================================================
-    
-    # Example format for creating transformation matrices from 4x4 numpy arrays:
-    #
-    # T_base_tool_1 = np.array([
-    #     [r11, r12, r13, tx],
-    #     [r21, r22, r23, ty],
-    #     [r31, r32, r33, tz],
-    #     [0,   0,   0,   1]
-    # ], dtype=np.float64)
-    #
-    # tool_poses_in_base = [T_base_tool_1, T_base_tool_2, ...]
-    # tag_poses_in_camera = [T_tag_cam_1, T_tag_cam_2, ...]
+    tool_poses_in_base = [xyz_rotvec_to_matrix(tool_pose) for tool_pose in tool_poses]
+    tag_poses_in_camera = tag_poses
 
-    # Example: Converting [x, y, z, rx, ry, rz] (axis-angle) to transformation matrix
+    # ========================================================================
+    # Validation
+    # ========================================================================
+    
+    if not tool_poses_in_base or not tag_poses_in_camera:
+        raise ValueError("Please fill in the calibration data before running the script!")
+    
+    if len(tool_poses_in_base) != len(tag_poses_in_camera):
+        raise ValueError("Number of tool poses and tag poses must match!")
+    
+    if len(tool_poses_in_base) < 3:
+        raise ValueError("At least 3 pose pairs are required for calibration!")
+    
+    # ========================================================================
+    # Step 1: Initial Estimation
+    # ========================================================================
+    
+    print("=" * 70)
+    print("HAND-EYE CALIBRATION: Camera-Base Transformation")
+    print("=" * 70)
+    print(f"\nNumber of measurement pairs: {len(tool_poses_in_base)}")
+    
+    # print("\n--- Step 1: Computing Initial Estimates (using OpenCV) ---")
+    tag_H_tool_initial, camera_H_base_initial = compute_initial_estimates(
+        tool_poses_in_base, 
+        tag_poses_in_camera
+    )
+    
+    # ========================================================================
+    # Step 2: Non-linear Optimization
+    # ========================================================================
+    
+    # print("\n--- Step 2: Refining with Non-linear Optimization ---")
+    tag_H_tool_optimized, camera_H_base_optimized, result = optimize_hand_eye_calibration(
+        tool_poses_in_base,
+        tag_poses_in_camera,
+        initial_x=tag_H_tool_initial,
+        initial_z=camera_H_base_initial,
+        verbose=True
+    )
+    
+    # ========================================================================
+    tag_H_tool_xyz_rotvec = matrix_to_xyz_rotvec(tag_H_tool_optimized)
+    camera_H_base_xyz_rotvec = matrix_to_xyz_rotvec(camera_H_base_optimized)
+
+    return tag_H_tool_xyz_rotvec, camera_H_base_xyz_rotvec
+
+
+if __name__ == "__main__":
+        # Example: Converting [x, y, z, rx, ry, rz] (axis-angle) to transformation matrix
     tool_pose_1 = xyz_rotvec_to_matrix(np.array([-0.70592, -0.34260, 0.16193, 1.329, 2.806, -0.553]))
     tool_pose_2 = xyz_rotvec_to_matrix(np.array([-0.79909, -0.31550, 0.16532, 1.070, 3.001, -0.584]))
     tool_pose_3 = xyz_rotvec_to_matrix(np.array([-0.67335, -0.51371, 0.16448, 1.665, 2.241, -0.844]))
@@ -367,98 +403,6 @@ def main():
         [0.0000, 0.0000, 0.0000, 1.0000]
     ], dtype=np.float64)
 
-    tool_poses_in_base = [tool_pose_1, tool_pose_2, tool_pose_3, tool_pose_4]
-    tag_poses_in_camera = [tag_pose_1, tag_pose_2, tag_pose_3, tag_pose_4]
-
-    # ========================================================================
-    # Validation
-    # ========================================================================
-    
-    if not tool_poses_in_base or not tag_poses_in_camera:
-        raise ValueError("Please fill in the calibration data before running the script!")
-    
-    if len(tool_poses_in_base) != len(tag_poses_in_camera):
-        raise ValueError("Number of tool poses and tag poses must match!")
-    
-    if len(tool_poses_in_base) < 3:
-        raise ValueError("At least 3 pose pairs are required for calibration!")
-    
-    # ========================================================================
-    # Step 1: Initial Estimation
-    # ========================================================================
-    
-    print("=" * 70)
-    print("HAND-EYE CALIBRATION: Camera-Base Transformation")
-    print("=" * 70)
-    print(f"\nNumber of measurement pairs: {len(tool_poses_in_base)}")
-    # print("\nCalibration setup:")
-    # print("  - tool_poses_in_base: Robot tool (gripper) poses in base coordinate frame")
-    # print("  - tag_poses_in_camera: Calibration tag poses in camera coordinate frame")
-    # print("  - Solving for:")
-    # print("    * X = tag_H_tool (tag to tool transformation)")
-    # print("    * Z = camera_H_base (camera to base transformation)")
-    
-    # print("\n--- Step 1: Computing Initial Estimates (using OpenCV) ---")
-    tag_H_tool_initial, camera_H_base_initial = compute_initial_estimates(
-        tool_poses_in_base, 
-        tag_poses_in_camera
-    )
-    
-    # print("Initial tag_H_tool estimate:")
-    # print(tag_H_tool_initial.round(4))
-    # print("\nInitial camera_H_base estimate:")
-    # print(camera_H_base_initial.round(4))
-    
-    # ========================================================================
-    # Step 2: Non-linear Optimization
-    # ========================================================================
-    
-    # print("\n--- Step 2: Refining with Non-linear Optimization ---")
-    tag_H_tool_optimized, camera_H_base_optimized, result = optimize_hand_eye_calibration(
-        tool_poses_in_base,
-        tag_poses_in_camera,
-        initial_x=tag_H_tool_initial,
-        initial_z=camera_H_base_initial,
-        verbose=True
-    )
-    
-    # ========================================================================
-    # Display Results
-    # ========================================================================
-    
-    print("\n" + "=" * 70)
-    print("CALIBRATION RESULTS")
-    print("=" * 70)
-    
-    print("\nOptimized tag_H_tool transformation (X in AX=ZB):")
-    # print("4x4 Matrix:")
-    # print(tag_H_tool_optimized.round(4))
-    tag_H_tool_xyz_rotvec = matrix_to_xyz_rotvec(tag_H_tool_optimized)
-    print("\n[x, y, z, rx, ry, rz] format (rotation in radians):")
-    print(tag_H_tool_xyz_rotvec.round(4))
-    
-    print("\n" + "-" * 70)
-    
-    print("\nOptimized camera_H_base transformation (Z in AX=ZB):")
-    # print("4x4 Matrix:")
-    # print(camera_H_base_optimized.round(4))
-    camera_H_base_xyz_rotvec = matrix_to_xyz_rotvec(camera_H_base_optimized)
-    print("\n[x, y, z, rx, ry, rz] format (rotation in radians):")
-    print(camera_H_base_xyz_rotvec.round(4))
-    
-    print(f"\nOptimization status: {result.message}")
-    print(f"Final cost: {result.cost:.6f}")
-    print(f"Number of iterations: {result.nfev}")
-    
-    print("\n" + "=" * 70)
-    print("USAGE NOTES")
-    print("=" * 70)
-    print("camera_H_base: Use this to transform points from camera frame to robot base frame")
-    print("tag_H_tool: Represents the fixed relationship between calibration tag and tool")
-    print("\nNote: Rotation values (rx, ry, rz) are in axis-angle representation (radians)")
-    
-    return tag_H_tool_optimized, camera_H_base_optimized
-
-
-if __name__ == "__main__":
-    tag_H_tool, camera_H_base = main()
+    tool_poses = [tool_pose_1, tool_pose_2, tool_pose_3, tool_pose_4]
+    tag_poses = [tag_pose_1, tag_pose_2, tag_pose_3, tag_pose_4]
+    tag_H_tool, camera_H_base = caculate(tool_poses, tag_poses)

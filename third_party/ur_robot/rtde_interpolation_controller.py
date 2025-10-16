@@ -449,13 +449,15 @@ class RTDEInterpolationController(mp.Process):
         self.input_queue.put(message)
 
     # ========= receive APIs =============
-    def get_state(self, k=None, out=None):
+    def get_state(self, k=None, out=None, wait_for_new=True, timeout=0.1):
         """
         Get current or historical robot state with inter-process communication.
         
         Args:
             k: Number of historical states to return (None for current only)
             out: Output array to fill (not used in simplified version)
+            wait_for_new (bool): If True, wait for a new state if the queue is empty.
+            timeout (float): Maximum time to wait for a new state.
             
         Returns:
             dict: Robot state information
@@ -465,6 +467,17 @@ class RTDEInterpolationController(mp.Process):
             latest_state = self.state_queue.get_nowait()
             with self._cache_lock:
                 self._cached_state = latest_state
+                # If requested, block and wait for a new state to arrive.
+
+        if wait_for_new:
+            try:
+                # This will wait for a fresh state if the queue was empty.
+                latest_state = self.state_queue.get(timeout=timeout)
+                with self._cache_lock:
+                    self._cached_state = latest_state
+            except queue.Empty:
+                # Timeout occurred. This is fine; we'll return the last known state.
+                pass
         
         # Return the cached state
         with self._cache_lock:
@@ -527,6 +540,7 @@ class RTDEInterpolationController(mp.Process):
         # init pose
         if self.joints_init is not None:
             assert rtde_c.moveJ(self.joints_init, self.joints_init_speed, 1.4)
+            time.sleep(1.5)  # wait for a while to stabilize
 
         # main loop
         dt = 1. / self.frequency

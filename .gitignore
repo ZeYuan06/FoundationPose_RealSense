@@ -158,3 +158,5 @@ logs/
 run_used.yml
 
 third_party/ur_robot/grasps
+
+calibration_data/

@@ -157,6 +157,19 @@ class RoboticArm:
         assert self.is_ready
         self.controller.command_gripper(gripper_pos, speed, force)
 
+    def return_to_home(self, target_time: float):
+        """
+        Returns the robot arm to the home position.
+
+        Args:
+            target_time (float, optional): The target time for returning to home. Defaults to 1.5 seconds.
+        """
+        assert self.is_ready
+        home_joints = np.array([0, -90, 90, -90, -90, 0]) / 180 * np.pi
+
+        # Use servoJ for immediate joint control
+        self.controller.schedule_joint_waypoint(home_joints, target_time)
+
 
 def main():
     """
