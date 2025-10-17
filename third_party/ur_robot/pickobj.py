@@ -20,7 +20,6 @@ def visualize_poses(poses: Dict[str, np.ndarray], title: str = "Pose Visualizati
         axis_length (float): The length of the coordinate frame axes to draw.
     """
     import matplotlib.pyplot as plt
-    from typing import Dict
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     ax.set_title(title)
@@ -97,7 +96,7 @@ def solve_pickbox_with_grasp_real_robot(
     """
     if grasp_file_path is None:
         grasp_file_path = os.path.join(os.path.dirname(__file__), "grasps", "flask_grasps.npz")
-    
+
     print(f"Starting pick task with grasp {grasp_idx}")
     print(f"Object pose: {object_pose}")
     print(f"Grasp file: {grasp_file_path}")
@@ -122,7 +121,8 @@ def solve_pickbox_with_grasp_real_robot(
         print("Robot ready!")
         
         # Initialize motion planner
-        object_pose_camera = np.array([-1.0599, -0.565981, 0.68005, -2.21643, 0.47606, -0.335874])  # FIXME: This pose here is somehow upside-down
+        # object_pose_camera = np.array([-0.9588, -0.5602,  0.4839, -2.1478,  0.5586, -0.4527])
+        object_pose_camera = np.array([-1.1940, -0.5883,  0.4981, -2.0145,  0.6835, -0.6615])
         planner = MotionPlanner(
             robot=robot,
             camera_to_robot_transform=object_pose_camera,
@@ -130,7 +130,7 @@ def solve_pickbox_with_grasp_real_robot(
             joint_vel_limits=0.5,
             joint_acc_limits=0.5,
             grasp_file_path=grasp_file_path,
-            tcp_offset=0.13
+            tcp_offset=0.20
         )
 
         if debug:
@@ -178,6 +178,8 @@ def solve_pickbox_with_grasp_real_robot(
         # Create approach pose (move back along Z-axis)
         approach_pose = grasp_pose.copy()
         approach_pose[2] += approach_distance  # Move back in Z direction
+        print(f"The approach pose is {approach_pose}")
+        return
         
         print(f"Approach pose: {approach_pose}")
         success = planner.move_to_pose(approach_pose, use_rrt=False, execution_time=4.0)
@@ -185,6 +187,7 @@ def solve_pickbox_with_grasp_real_robot(
             print("Pre-grasp position planning failed")
             planner.close()
             return False
+        return
 
         # -------------------------------------------------------------------------- #
         # Stage 3: Move precisely to grasp position using straight-line motion

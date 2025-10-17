@@ -38,7 +38,7 @@ class RealRobotMotionPlanner:
         joint_vel_limits: float = 0.5,  # Reduced for safety
         joint_acc_limits: float = 0.5,  # Reduced for safety
         grasp_file_path: str = None,
-        tcp_offset: float = 0.13,
+        tcp_offset: float = 0.20,
     ):
         """
         Initialize real robot motion planner

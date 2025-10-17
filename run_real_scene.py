@@ -245,7 +245,7 @@ def run_pose_estimation_on_captured_data(output_dir, mesh_file, est_refine_iter=
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     code_dir = os.path.dirname(os.path.realpath(__file__))
-    parser.add_argument('--mesh_file', type=str, default=f'{code_dir}/demo_data/realsense/mesh/flask.obj')
+    parser.add_argument('--mesh_file', type=str, default=f'{code_dir}/demo_data/realsense/mesh/apple.obj')
     parser.add_argument('--est_refine_iter', type=int, default=5)
     parser.add_argument('--track_refine_iter', type=int, default=2)
     parser.add_argument('--debug', type=int, default=1)
